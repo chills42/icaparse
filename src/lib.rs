@@ -1,16 +1,16 @@
 #![cfg_attr(not(feature = "std"),  no_std)]
 #![cfg_attr(test, deny(warnings))]
 #![deny(missing_docs)]
-//! # httparse
+//! # icaparse
 //!
-//! A push library for parsing HTTP/1.x requests and responses.
+//! A push library for parsing ICAP/1.x requests and responses.
 //!
 //! The focus is on speed and safety. Unsafe code is used to keep parsing fast,
 //! but unsafety is contained in a submodule, with invariants enforced. The
 //! parsing internals use an `Iterator` instead of direct indexing, while
 //! skipping bounds checks.
 //!
-//! The speed is faster than picohttpparser, when SIMD is not available.
+//! This parser is based heavily on the httparse HTTP parsing library.
 #[cfg(feature = "std")] extern crate std as core;
 
 use core::{fmt, result, str, slice};
@@ -177,7 +177,7 @@ impl Error {
             Error::Status => "invalid response status",
             Error::Token => "invalid token",
             Error::TooManyHeaders => "too many headers",
-            Error::Version => "invalid HTTP version",
+            Error::Version => "invalid ICAP version",
         }
     }
 }
@@ -265,9 +265,9 @@ impl<T> Status<T> {
 /// # Example
 ///
 /// ```no_run
-/// let buf = b"GET /404 HTTP/1.1\r\nHost:";
-/// let mut headers = [httparse::EMPTY_HEADER; 16];
-/// let mut req = httparse::Request::new(&mut headers);
+/// let buf = b"RESPMOD /404 ICAP/1.1\r\nHost:";
+/// let mut headers = [icaparse::EMPTY_HEADER; 16];
+/// let mut req = icaparse::Request::new(&mut headers);
 /// let res = req.parse(buf).unwrap();
 /// if res.is_partial() {
 ///     match req.path {
@@ -283,11 +283,11 @@ impl<T> Status<T> {
 /// ```
 #[derive(Debug, PartialEq)]
 pub struct Request<'headers, 'buf: 'headers> {
-    /// The request method, such as `GET`.
+    /// The request method, such as `RESPMOD`.
     pub method: Option<&'buf str>,
     /// The request path, such as `/about-us`.
     pub path: Option<&'buf str>,
-    /// The request version, such as `HTTP/1.1`.
+    /// The request version, such as `ICAP/1.1`.
     pub version: Option<u8>,
     /// The request headers.
     pub headers: &'headers mut [Header<'buf>]
@@ -348,7 +348,7 @@ fn skip_empty_lines(bytes: &mut Bytes) -> Result<()> {
 /// See `Request` docs for explanation of optional values.
 #[derive(Debug, PartialEq)]
 pub struct Response<'headers, 'buf: 'headers> {
-    /// The response version, such as `HTTP/1.1`.
+    /// The response version, such as `ICAP/1.1`.
     pub version: Option<u8>,
     /// The response code, such as `200`.
     pub code: Option<u16>,
@@ -429,16 +429,16 @@ pub struct Header<'a> {
 /// # Example
 ///
 /// ```
-/// let headers = [httparse::EMPTY_HEADER; 64];
+/// let headers = [icaparse::EMPTY_HEADER; 64];
 /// ```
 pub const EMPTY_HEADER: Header<'static> = Header { name: "", value: b"" };
 
 #[inline]
 fn parse_version(bytes: &mut Bytes) -> Result<u8> {
     if let Some(mut eight) = bytes.next_8() {
-        expect!(eight._0() => b'H' |? Err(Error::Version));
-        expect!(eight._1() => b'T' |? Err(Error::Version));
-        expect!(eight._2() => b'T' |? Err(Error::Version));
+        expect!(eight._0() => b'I' |? Err(Error::Version));
+        expect!(eight._1() => b'C' |? Err(Error::Version));
+        expect!(eight._2() => b'A' |? Err(Error::Version));
         expect!(eight._3() => b'P' |? Err(Error::Version));
         expect!(eight._4() => b'/' |? Err(Error::Version));
         expect!(eight._5() => b'1' |? Err(Error::Version));
@@ -530,11 +530,11 @@ fn parse_code(bytes: &mut Bytes) -> Result<u16> {
 ///
 /// ```
 /// let buf = b"Host: foo.bar\nAccept: */*\n\nblah blah";
-/// let mut headers = [httparse::EMPTY_HEADER; 4];
-/// assert_eq!(httparse::parse_headers(buf, &mut headers),
-///            Ok(httparse::Status::Complete((27, &[
-///                httparse::Header { name: "Host", value: b"foo.bar" },
-///                httparse::Header { name: "Accept", value: b"*/*" }
+/// let mut headers = [icaparse::EMPTY_HEADER; 4];
+/// assert_eq!(icaparse::parse_headers(buf, &mut headers),
+///            Ok(icaparse::Status::Complete((27, &[
+///                icaparse::Header { name: "Host", value: b"foo.bar" },
+///                icaparse::Header { name: "Accept", value: b"*/*" }
 ///            ][..]))));
 /// ```
 pub fn parse_headers<'b: 'h, 'h>(src: &'b [u8], mut dst: &'h mut [Header<'b>])
@@ -668,8 +668,8 @@ fn parse_headers_iter<'a, 'b>(headers: &mut &mut [Header<'a>], bytes: &'b mut By
 ///
 /// ```
 /// let buf = b"4\r\nRust\r\n0\r\n\r\n";
-/// assert_eq!(httparse::parse_chunk_size(buf),
-///            Ok(httparse::Status::Complete((3, 4))));
+/// assert_eq!(icaparse::parse_chunk_size(buf),
+///            Ok(icaparse::Status::Complete((3, 4))));
 /// ```
 pub fn parse_chunk_size(buf: &[u8])
         -> result::Result<Status<(usize, u64)>, InvalidChunkSize> {
@@ -776,9 +776,9 @@ mod tests {
 
     req! {
         test_request_simple,
-        b"GET / HTTP/1.1\r\n\r\n",
+        b"RESPMOD / ICAP/1.1\r\n\r\n",
         |req| {
-            assert_eq!(req.method.unwrap(), "GET");
+            assert_eq!(req.method.unwrap(), "RESPMOD");
             assert_eq!(req.path.unwrap(), "/");
             assert_eq!(req.version.unwrap(), 1);
             assert_eq!(req.headers.len(), 0);
@@ -787,9 +787,9 @@ mod tests {
 
     req! {
         test_request_headers,
-        b"GET / HTTP/1.1\r\nHost: foo.com\r\nCookie: \r\n\r\n",
+        b"RESPMOD / ICAP/1.1\r\nHost: foo.com\r\nCookie: \r\n\r\n",
         |req| {
-            assert_eq!(req.method.unwrap(), "GET");
+            assert_eq!(req.method.unwrap(), "RESPMOD");
             assert_eq!(req.path.unwrap(), "/");
             assert_eq!(req.version.unwrap(), 1);
             assert_eq!(req.headers.len(), 2);
@@ -802,7 +802,7 @@ mod tests {
 
     req! {
         test_request_headers_max,
-        b"GET / HTTP/1.1\r\nA: A\r\nB: B\r\nC: C\r\nD: D\r\n\r\n",
+        b"RESPMOD / ICAP/1.1\r\nA: A\r\nB: B\r\nC: C\r\nD: D\r\n\r\n",
         |req| {
             assert_eq!(req.headers.len(), NUM_OF_HEADERS);
         }
@@ -810,9 +810,9 @@ mod tests {
 
     req! {
         test_request_multibyte,
-        b"GET / HTTP/1.1\r\nHost: foo.com\r\nUser-Agent: \xe3\x81\xb2\xe3/1.0\r\n\r\n",
+        b"RESPMOD / ICAP/1.1\r\nHost: foo.com\r\nUser-Agent: \xe3\x81\xb2\xe3/1.0\r\n\r\n",
         |req| {
-            assert_eq!(req.method.unwrap(), "GET");
+            assert_eq!(req.method.unwrap(), "RESPMOD");
             assert_eq!(req.path.unwrap(), "/");
             assert_eq!(req.version.unwrap(), 1);
             assert_eq!(req.headers[0].name, "Host");
@@ -825,21 +825,21 @@ mod tests {
 
     req! {
         test_request_partial,
-        b"GET / HTTP/1.1\r\n\r", Ok(Status::Partial),
+        b"RESPMOD / ICAP/1.1\r\n\r", Ok(Status::Partial),
         |_req| {}
     }
 
     req! {
         test_request_newlines,
-        b"GET / HTTP/1.1\nHost: foo.bar\n\n",
+        b"RESPMOD / ICAP/1.1\nHost: foo.bar\n\n",
         |_r| {}
     }
 
     req! {
         test_request_empty_lines_prefix,
-        b"\r\n\r\nGET / HTTP/1.1\r\n\r\n",
+        b"\r\n\r\nRESPMOD / ICAP/1.1\r\n\r\n",
         |req| {
-            assert_eq!(req.method.unwrap(), "GET");
+            assert_eq!(req.method.unwrap(), "RESPMOD");
             assert_eq!(req.path.unwrap(), "/");
             assert_eq!(req.version.unwrap(), 1);
             assert_eq!(req.headers.len(), 0);
@@ -848,9 +848,9 @@ mod tests {
 
     req! {
         test_request_empty_lines_prefix_lf_only,
-        b"\n\nGET / HTTP/1.1\n\n",
+        b"\n\nRESPMOD / ICAP/1.1\n\n",
         |req| {
-            assert_eq!(req.method.unwrap(), "GET");
+            assert_eq!(req.method.unwrap(), "RESPMOD");
             assert_eq!(req.path.unwrap(), "/");
             assert_eq!(req.version.unwrap(), 1);
             assert_eq!(req.headers.len(), 0);
@@ -859,7 +859,7 @@ mod tests {
 
     req! {
         test_request_with_invalid_token_delimiter,
-        b"GET\n/ HTTP/1.1\r\nHost: foo.bar\r\n\r\n",
+        b"RESPMOD\n/ ICAP/1.1\r\nHost: foo.bar\r\n\r\n",
         Err(::Error::Token),
         |_r| {}
     }
@@ -886,7 +886,7 @@ mod tests {
 
     res! {
         test_response_simple,
-        b"HTTP/1.1 200 OK\r\n\r\n",
+        b"ICAP/1.1 200 OK\r\n\r\n",
         |res| {
             assert_eq!(res.version.unwrap(), 1);
             assert_eq!(res.code.unwrap(), 200);
@@ -896,13 +896,13 @@ mod tests {
 
     res! {
         test_response_newlines,
-        b"HTTP/1.0 403 Forbidden\nServer: foo.bar\n\n",
+        b"ICAP/1.0 403 Forbidden\nServer: foo.bar\n\n",
         |_r| {}
     }
 
     res! {
         test_response_reason_missing,
-        b"HTTP/1.1 200 \r\n\r\n",
+        b"ICAP/1.1 200 \r\n\r\n",
         |res| {
             assert_eq!(res.version.unwrap(), 1);
             assert_eq!(res.code.unwrap(), 200);
@@ -912,7 +912,7 @@ mod tests {
 
     res! {
         test_response_reason_missing_no_space,
-        b"HTTP/1.1 200\r\n\r\n",
+        b"ICAP/1.1 200\r\n\r\n",
         |res| {
             assert_eq!(res.version.unwrap(), 1);
             assert_eq!(res.code.unwrap(), 200);
@@ -922,7 +922,7 @@ mod tests {
 
     res! {
         test_response_reason_with_space_and_tab,
-        b"HTTP/1.1 101 Switching Protocols\t\r\n\r\n",
+        b"ICAP/1.1 101 Switching Protocols\t\r\n\r\n",
         |res| {
             assert_eq!(res.version.unwrap(), 1);
             assert_eq!(res.code.unwrap(), 101);
@@ -930,7 +930,7 @@ mod tests {
         }
     }
 
-    static RESPONSE_REASON_WITH_OBS_TEXT_BYTE: &'static [u8] = b"HTTP/1.1 200 X\xFFZ\r\n\r\n";
+    static RESPONSE_REASON_WITH_OBS_TEXT_BYTE: &'static [u8] = b"ICAP/1.1 200 X\xFFZ\r\n\r\n";
     res! {
         test_response_reason_with_obsolete_text_byte,
         RESPONSE_REASON_WITH_OBS_TEXT_BYTE,
@@ -940,28 +940,28 @@ mod tests {
 
     res! {
         test_response_reason_with_nul_byte,
-        b"HTTP/1.1 200 \x00\r\n\r\n",
+        b"ICAP/1.1 200 \x00\r\n\r\n",
         Err(::Error::Status),
         |_res| {}
     }
 
     res! {
         test_response_version_missing_space,
-        b"HTTP/1.1",
+        b"ICAP/1.1",
         Ok(Status::Partial),
         |_res| {}
     }
 
     res! {
         test_response_code_missing_space,
-        b"HTTP/1.1 200",
+        b"ICAP/1.1 200",
         Ok(Status::Partial),
         |_res| {}
     }
 
     res! {
         test_response_empty_lines_prefix_lf_only,
-        b"\n\nHTTP/1.1 200 OK\n\n",
+        b"\n\nICAP/1.1 200 OK\n\n",
         |_res| {}
     }
 
