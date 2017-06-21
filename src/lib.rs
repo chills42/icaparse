@@ -165,6 +165,8 @@ pub enum Error {
     TooManyHeaders,
     /// Invalid byte in HTTP version.
     Version,
+    /// Missing encapsulated header
+    MissingEncapsulated
 }
 
 impl Error {
@@ -178,6 +180,7 @@ impl Error {
             Error::Token => "invalid token",
             Error::TooManyHeaders => "too many headers",
             Error::Version => "invalid ICAP version",
+            Error::MissingEncapsulated => "missing encapsulated ICAP header",
         }
     }
 }
@@ -290,7 +293,9 @@ pub struct Request<'headers, 'buf: 'headers> {
     /// The request version, such as `ICAP/1.1`.
     pub version: Option<u8>,
     /// The request headers.
-    pub headers: &'headers mut [Header<'buf>]
+    pub headers: &'headers mut [Header<'buf>],
+    /// The sections of the encapsulated body listed in the Encapsulated header
+    pub encapsulated_sections: Option<Vec<EncapsulationSection>>
 }
 
 impl<'h, 'b> Request<'h, 'b> {
@@ -302,6 +307,7 @@ impl<'h, 'b> Request<'h, 'b> {
             path: None,
             version: None,
             headers: headers,
+            encapsulated_sections: None,
         }
     }
 
@@ -317,8 +323,14 @@ impl<'h, 'b> Request<'h, 'b> {
 
         let len = orig_len - bytes.len();
         let headers_len = complete!(parse_headers_iter(&mut self.headers, &mut bytes));
+        match self.headers.iter().find(|&h| h.name == "Encapsulated") {
+            Some(h) => {
+                self.encapsulated_sections = Some(parse_encapsulated(&h.value));
+                Ok(Status::Complete(orig_len + len - len + headers_len - headers_len))
+            },
+            None => Err(Error::MissingEncapsulated)
+        }
 
-        Ok(Status::Complete(len + headers_len))
     }
 }
 
@@ -452,6 +464,79 @@ fn parse_version(bytes: &mut Bytes) -> Result<u8> {
     } else {
         Ok(Status::Partial)
     }
+}
+
+fn find_section_start(encapsulated: &str, section: &str) -> Option<u16> {
+    if let Some(x) = encapsulated.find(section) {
+        let start = x + section.len();
+        let end = match encapsulated[start..encapsulated.len()].find(",") {
+            Some(i) => start + i,
+            None => encapsulated.len()
+        };
+        encapsulated[start..end].parse::<u16>().ok()
+    }
+    else {
+        None
+    }
+}
+
+/// Describes a section of the encapsulated data
+/// as listed in the Encapsulated header
+#[derive(Debug, PartialEq)]
+pub struct EncapsulationSection {
+    /// The type of data in the section
+    name: SectionType,
+    /// The start of the section
+    start: u16
+}
+
+impl fmt::Display for EncapsulationSection {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "found {:?} starting at {}", self.name, self.start)
+    }
+}
+
+/// Possible sections of the encapsulated icap data
+#[derive(Debug, PartialEq)]
+pub enum SectionType {
+    /// Null Body Section
+    NullBody,
+    /// Resquest Header Section
+    RequestHeader,
+    /// Request Body Section
+    RequestBody,
+    /// Response Header Section
+    ResponseHeader,
+    /// Response Body Section
+    ResponseBody,
+    /// Options Body Section
+    OptionsBody
+}
+
+fn parse_encapsulated(bytes: &[u8]) -> Vec<EncapsulationSection> {
+    let mut sections = Vec::new();
+    if let Ok(encapsulated) = str::from_utf8(bytes) {
+        if let Some(section_start) = find_section_start(encapsulated, "req-hdr=") {
+            sections.push(EncapsulationSection { name: SectionType::RequestHeader, start: section_start });
+        }
+        if let Some(section_start) = find_section_start(encapsulated, "req-body=") {
+            sections.push(EncapsulationSection { name: SectionType::RequestBody, start: section_start });
+        }
+        if let Some(section_start) = find_section_start(encapsulated, "null-body=") {
+            sections.push(EncapsulationSection { name: SectionType::NullBody, start: section_start });
+        }
+        if let Some(section_start) = find_section_start(encapsulated, "res-hdr=") {
+            sections.push(EncapsulationSection { name: SectionType::ResponseHeader, start: section_start });
+        }
+        if let Some(section_start) = find_section_start(encapsulated, "res-body=") {
+            sections.push(EncapsulationSection { name: SectionType::ResponseBody, start: section_start });
+        }
+        if let Some(section_start) = find_section_start(encapsulated, "opt-body=") {
+            sections.push(EncapsulationSection { name: SectionType::OptionsBody, start: section_start });
+        }
+    }
+
+    sections
 }
 
 /// From [RFC 7230](https://tools.ietf.org/html/rfc7230):
@@ -776,33 +861,70 @@ mod tests {
 
     req! {
         test_request_simple,
-        b"RESPMOD / ICAP/1.1\r\n\r\n",
+        b"OPTIONS / ICAP/1.1\r\nEncapsulated:null-body=0\r\n\r\n",
         |req| {
-            assert_eq!(req.method.unwrap(), "RESPMOD");
+            assert_eq!(req.method.unwrap(), "OPTIONS");
             assert_eq!(req.path.unwrap(), "/");
             assert_eq!(req.version.unwrap(), 1);
-            assert_eq!(req.headers.len(), 0);
+            assert_eq!(req.headers.len(), 1);
         }
     }
 
     req! {
-        test_request_headers,
-        b"RESPMOD / ICAP/1.1\r\nHost: foo.com\r\nCookie: \r\n\r\n",
+        test_icap_options,
+        b"OPTIONS icap://example.local/service ICAP/1.0\r\nHost: example.local\r\nUser-Agent: Example-ICAP-Client-Library/2.0\r\nEncapsulated:null-body=0\r\n\r\n",
         |req| {
-            assert_eq!(req.method.unwrap(), "RESPMOD");
-            assert_eq!(req.path.unwrap(), "/");
-            assert_eq!(req.version.unwrap(), 1);
-            assert_eq!(req.headers.len(), 2);
+            assert_eq!(req.method.unwrap(), "OPTIONS");
+            assert_eq!(req.path.unwrap(), "icap://example.local/service");
+            assert_eq!(req.headers.len(), 3);
             assert_eq!(req.headers[0].name, "Host");
-            assert_eq!(req.headers[0].value, b"foo.com");
-            assert_eq!(req.headers[1].name, "Cookie");
-            assert_eq!(req.headers[1].value, b"");
+            assert_eq!(req.headers[0].value, b"example.local");
+            assert_eq!(req.headers[1].name, "User-Agent");
+            assert_eq!(req.headers[1].value, b"Example-ICAP-Client-Library/2.0");
         }
     }
+
+    req! {
+        test_basic_respmod,
+        b"RESPMOD / ICAP/1.0\r\nEncapsulated: null-body=0\r\n\r\n",
+        |req| {
+            assert_eq!(req.method.unwrap(), "RESPMOD");
+        }
+    }
+
+    req! {
+        test_full_respmod,
+        b"RESPMOD icap://icap.example.org/satisf ICAP/1.0\r
+Host: icap.example.org\r
+Encapsulated: req-hdr=0, res-hdr=137, res-body=296\r
+\r
+GET /origin-resource HTTP/1.1\r
+Host: www.origin-server.com\r
+Accept: text/html, text/plain, image/gif\r
+Accept-Encoding: gzip, compress\r
+\r
+HTTP/1.1 200 OK\r
+Date: Mon, 10 Jan 2000 09:52:22 GMT\r
+Server: Apache/1.3.6 (Unix)\r
+ETag: \"63840-1ab7-378d415b\"\r
+Content-Type: text/html\r
+Content-Length: 51\r
+\r
+33\r
+This is data that was returned by an origin server.\r
+0\r
+\r
+",
+        |req| {
+            assert_eq!(req.method.unwrap(), "RESPMOD");
+        }
+    }
+
+
 
     req! {
         test_request_headers_max,
-        b"RESPMOD / ICAP/1.1\r\nA: A\r\nB: B\r\nC: C\r\nD: D\r\n\r\n",
+        b"RESPMOD / ICAP/1.1\r\nA: A\r\nB: B\r\nC: C\r\nEncapsulated:null-body=0\r\n\r\n",
         |req| {
             assert_eq!(req.headers.len(), NUM_OF_HEADERS);
         }
@@ -810,7 +932,7 @@ mod tests {
 
     req! {
         test_request_multibyte,
-        b"RESPMOD / ICAP/1.1\r\nHost: foo.com\r\nUser-Agent: \xe3\x81\xb2\xe3/1.0\r\n\r\n",
+        b"RESPMOD / ICAP/1.1\r\nHost: foo.com\r\nUser-Agent: \xe3\x81\xb2\xe3/1.0\r\nEncapsulated:null-body=0\r\n\r\n",
         |req| {
             assert_eq!(req.method.unwrap(), "RESPMOD");
             assert_eq!(req.path.unwrap(), "/");
@@ -831,29 +953,18 @@ mod tests {
 
     req! {
         test_request_newlines,
-        b"RESPMOD / ICAP/1.1\nHost: foo.bar\n\n",
+        b"RESPMOD / ICAP/1.1\nHost: foo.bar\nEncapsulated:null-body=0\n\n",
         |_r| {}
     }
 
     req! {
         test_request_empty_lines_prefix,
-        b"\r\n\r\nRESPMOD / ICAP/1.1\r\n\r\n",
+        b"\r\n\r\nRESPMOD / ICAP/1.1\r\nEncapsulated:null-body=0\r\n\r\n",
         |req| {
             assert_eq!(req.method.unwrap(), "RESPMOD");
             assert_eq!(req.path.unwrap(), "/");
             assert_eq!(req.version.unwrap(), 1);
-            assert_eq!(req.headers.len(), 0);
-        }
-    }
-
-    req! {
-        test_request_empty_lines_prefix_lf_only,
-        b"\n\nRESPMOD / ICAP/1.1\n\n",
-        |req| {
-            assert_eq!(req.method.unwrap(), "RESPMOD");
-            assert_eq!(req.path.unwrap(), "/");
-            assert_eq!(req.version.unwrap(), 1);
-            assert_eq!(req.headers.len(), 0);
+            assert_eq!(req.headers.len(), 1);
         }
     }
 
