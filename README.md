@@ -17,7 +17,7 @@ assert!(try!(req.parse(buf)).is_partial());
 
 // a partial request, so we try again once we have more data
 
-let buf = b"RESPMOD /index.html ICAP/1.1\r\nHost: example.domain\r\n\r\n";
+let buf = b"RESPMOD /index.html ICAP/1.1\r\nHost: example.domain\r\nEncapsulated:null-body=0\r\n\r\n";
 assert!(try!(req.parse(buf)).is_complete());
 ```
 
