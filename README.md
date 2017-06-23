@@ -2,7 +2,9 @@
 
 [![crates.io](http://meritbadge.herokuapp.com/icaparse)](https://crates.io/crates/icaparse)
 
-A push parser for the ICAP 1.x protocol. Avoids allocations. Fast.
+A push parser for the ICAP 1.0 protocol. Avoids allocations. Fast.
+
+The goal of the library is to support the ICAP specification as defined in [RFC 3507](https://tools.ietf.org/html/rfc3507).
 
 [Documentation](https://docs.rs/icaparse)
 
@@ -12,12 +14,12 @@ A push parser for the ICAP 1.x protocol. Avoids allocations. Fast.
 let mut headers = [icaparse::EMPTY_HEADER; 16];
 let mut req = icaparse::Request::new(&mut headers);
 
-let buf = b"RESPMOD /index.html ICAP/1.1\r\nHost";
+let buf = b"RESPMOD /index.html ICAP/1.0\r\nHost";
 assert!(try!(req.parse(buf)).is_partial());
 
 // a partial request, so we try again once we have more data
 
-let buf = b"RESPMOD /index.html ICAP/1.1\r\nHost: example.domain\r\nEncapsulated:null-body=0\r\n\r\n";
+let buf = b"RESPMOD /index.html ICAP/1.0\r\nHost: example.domain\r\nEncapsulated:null-body=0\r\n\r\n";
 assert!(try!(req.parse(buf)).is_complete());
 ```
 

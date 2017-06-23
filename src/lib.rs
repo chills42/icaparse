@@ -3,7 +3,7 @@
 #![deny(missing_docs)]
 //! # icaparse
 //!
-//! A push library for parsing ICAP/1.x requests and responses.
+//! A push library for parsing ICAP/1.0 requests and responses.
 //!
 //! The focus is on speed and safety. Unsafe code is used to keep parsing fast,
 //! but unsafety is contained in a submodule, with invariants enforced. The
@@ -14,10 +14,12 @@
 #[cfg(feature = "std")] extern crate std as core;
 
 use core::{fmt, result, str, slice};
+use std::collections::HashMap;
 
 use iter::Bytes;
 
 mod iter;
+mod test;
 
 macro_rules! next {
     ($bytes:ident) => ({
@@ -268,7 +270,7 @@ impl<T> Status<T> {
 /// # Example
 ///
 /// ```no_run
-/// let buf = b"RESPMOD /404 ICAP/1.1\r\nHost:";
+/// let buf = b"RESPMOD /404 ICAP/1.0\r\nHost:";
 /// let mut headers = [icaparse::EMPTY_HEADER; 16];
 /// let mut req = icaparse::Request::new(&mut headers);
 /// let res = req.parse(buf).unwrap();
@@ -290,12 +292,12 @@ pub struct Request<'headers, 'buf: 'headers> {
     pub method: Option<&'buf str>,
     /// The request path, such as `/about-us`.
     pub path: Option<&'buf str>,
-    /// The request version, such as `ICAP/1.1`.
+    /// The request version, such as `ICAP/1.0`.
     pub version: Option<u8>,
     /// The request headers.
     pub headers: &'headers mut [Header<'buf>],
     /// The sections of the encapsulated body listed in the Encapsulated header
-    pub encapsulated_sections: Option<Vec<EncapsulationSection>>
+    pub encapsulated_sections: Option<HashMap<SectionType, Vec<u8>>>
 }
 
 impl<'h, 'b> Request<'h, 'b> {
@@ -325,10 +327,15 @@ impl<'h, 'b> Request<'h, 'b> {
         let headers_len = complete!(parse_headers_iter(&mut self.headers, &mut bytes));
         match self.headers.iter().find(|&h| h.name == "Encapsulated") {
             Some(h) => {
-                self.encapsulated_sections = Some(parse_encapsulated(&h.value));
+                self.encapsulated_sections = Some(parse_encapsulated(&h.value, &buf[len+headers_len..buf.len()]));
                 Ok(Status::Complete(orig_len + len - len + headers_len - headers_len))
             },
-            None => Err(Error::MissingEncapsulated)
+            None => {
+                match self.method {
+                  Some("OPTIONS") => Ok(Status::Complete(orig_len)),
+                  _ =>  Err(Error::MissingEncapsulated)
+                }
+            }
         }
 
     }
@@ -360,7 +367,7 @@ fn skip_empty_lines(bytes: &mut Bytes) -> Result<()> {
 /// See `Request` docs for explanation of optional values.
 #[derive(Debug, PartialEq)]
 pub struct Response<'headers, 'buf: 'headers> {
-    /// The response version, such as `ICAP/1.1`.
+    /// The response version, such as `ICAP/1.0`.
     pub version: Option<u8>,
     /// The response code, such as `200`.
     pub code: Option<u16>,
@@ -466,14 +473,14 @@ fn parse_version(bytes: &mut Bytes) -> Result<u8> {
     }
 }
 
-fn find_section_start(encapsulated: &str, section: &str) -> Option<u16> {
+fn find_section_start(encapsulated: &str, section: &str) -> Option<usize> {
     if let Some(x) = encapsulated.find(section) {
         let start = x + section.len();
         let end = match encapsulated[start..encapsulated.len()].find(",") {
             Some(i) => start + i,
             None => encapsulated.len()
         };
-        encapsulated[start..end].parse::<u16>().ok()
+        encapsulated[start..end].parse::<usize>().ok()
     }
     else {
         None
@@ -482,12 +489,22 @@ fn find_section_start(encapsulated: &str, section: &str) -> Option<u16> {
 
 /// Describes a section of the encapsulated data
 /// as listed in the Encapsulated header
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct EncapsulationSection {
     /// The type of data in the section
     name: SectionType,
     /// The start of the section
-    start: u16
+    start: usize
+}
+
+impl EncapsulationSection {
+    /// provides a constructor for method for the type
+  pub fn new(name: SectionType, start: usize) -> EncapsulationSection {
+      EncapsulationSection {
+          name: name,
+          start: start
+      }
+  }
 }
 
 impl fmt::Display for EncapsulationSection {
@@ -497,7 +514,7 @@ impl fmt::Display for EncapsulationSection {
 }
 
 /// Possible sections of the encapsulated icap data
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum SectionType {
     /// Null Body Section
     NullBody,
@@ -513,30 +530,53 @@ pub enum SectionType {
     OptionsBody
 }
 
-fn parse_encapsulated(bytes: &[u8]) -> Vec<EncapsulationSection> {
+fn parse_encapsulated(header: &[u8], encapsulated: &[u8]) -> HashMap<SectionType, Vec<u8>> {
     let mut sections = Vec::new();
-    if let Ok(encapsulated) = str::from_utf8(bytes) {
-        if let Some(section_start) = find_section_start(encapsulated, "req-hdr=") {
-            sections.push(EncapsulationSection { name: SectionType::RequestHeader, start: section_start });
-        }
-        if let Some(section_start) = find_section_start(encapsulated, "req-body=") {
-            sections.push(EncapsulationSection { name: SectionType::RequestBody, start: section_start });
-        }
-        if let Some(section_start) = find_section_start(encapsulated, "null-body=") {
-            sections.push(EncapsulationSection { name: SectionType::NullBody, start: section_start });
-        }
-        if let Some(section_start) = find_section_start(encapsulated, "res-hdr=") {
-            sections.push(EncapsulationSection { name: SectionType::ResponseHeader, start: section_start });
-        }
-        if let Some(section_start) = find_section_start(encapsulated, "res-body=") {
-            sections.push(EncapsulationSection { name: SectionType::ResponseBody, start: section_start });
-        }
-        if let Some(section_start) = find_section_start(encapsulated, "opt-body=") {
-            sections.push(EncapsulationSection { name: SectionType::OptionsBody, start: section_start });
+    {
+        let mut add_section = |section, start| sections.push(EncapsulationSection::new(section, start));
+
+        if let Ok(encapsulated) = str::from_utf8(header) {
+            if let Some(section_start) = find_section_start(encapsulated, "req-hdr=") {
+                add_section(SectionType::RequestHeader, section_start);
+            }
+            if let Some(section_start) = find_section_start(encapsulated, "req-body=") {
+                add_section(SectionType::ResponseBody, section_start);
+            }
+            if let Some(section_start) = find_section_start(encapsulated, "null-body=") {
+                add_section(SectionType::NullBody, section_start);
+            }
+            if let Some(section_start) = find_section_start(encapsulated, "res-hdr=") {
+                add_section(SectionType::ResponseHeader, section_start);
+            }
+            if let Some(section_start) = find_section_start(encapsulated, "res-body=") {
+                add_section(SectionType::ResponseBody, section_start);
+            }
+            if let Some(section_start) = find_section_start(encapsulated, "opt-body=") {
+                add_section(SectionType::OptionsBody, section_start);
+            }
         }
     }
-
-    sections
+    sections.sort_by(|a, b| a.start.cmp(&b.start));
+    let mut hm = HashMap::new();
+    let mut iter = sections.iter().peekable();
+    loop {
+        let x = iter.next();
+        let y = iter.peek();
+        if x.is_some() {
+            let x = x.unwrap();
+            if y.is_some() {
+                let y = y.unwrap();
+                hm.insert(x.name.clone(), encapsulated[x.start..y.start].to_vec());
+            }
+            else {
+                hm.insert(x.name.clone(), encapsulated[x.start..encapsulated.len()].to_vec());
+            }
+        }
+        else {
+            break;
+        }
+    }
+    hm
 }
 
 /// From [RFC 7230](https://tools.ietf.org/html/rfc7230):
@@ -821,285 +861,3 @@ pub fn parse_chunk_size(buf: &[u8])
     Ok(Status::Complete((bytes.pos(), size)))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Request, Response, Status, EMPTY_HEADER, shrink, parse_chunk_size};
-
-    const NUM_OF_HEADERS: usize = 4;
-
-    #[test]
-    fn test_shrink() {
-        let mut arr = [EMPTY_HEADER; 16];
-        {
-            let slice = &mut &mut arr[..];
-            assert_eq!(slice.len(), 16);
-            shrink(slice, 4);
-            assert_eq!(slice.len(), 4);
-        }
-        assert_eq!(arr.len(), 16);
-    }
-
-    macro_rules! req {
-        ($name:ident, $buf:expr, |$arg:ident| $body:expr) => (
-            req! {$name, $buf, Ok(Status::Complete($buf.len())), |$arg| $body }
-        );
-        ($name:ident, $buf:expr, $len:expr, |$arg:ident| $body:expr) => (
-        #[test]
-        fn $name() {
-            let mut headers = [EMPTY_HEADER; NUM_OF_HEADERS];
-            let mut req = Request::new(&mut headers[..]);
-            let status = req.parse($buf.as_ref());
-            assert_eq!(status, $len);
-            closure(req);
-
-            fn closure($arg: Request) {
-                $body
-            }
-        }
-        )
-    }
-
-    req! {
-        test_request_simple,
-        b"OPTIONS / ICAP/1.1\r\nEncapsulated:null-body=0\r\n\r\n",
-        |req| {
-            assert_eq!(req.method.unwrap(), "OPTIONS");
-            assert_eq!(req.path.unwrap(), "/");
-            assert_eq!(req.version.unwrap(), 1);
-            assert_eq!(req.headers.len(), 1);
-        }
-    }
-
-    req! {
-        test_icap_options,
-        b"OPTIONS icap://example.local/service ICAP/1.0\r\nHost: example.local\r\nUser-Agent: Example-ICAP-Client-Library/2.0\r\nEncapsulated:null-body=0\r\n\r\n",
-        |req| {
-            assert_eq!(req.method.unwrap(), "OPTIONS");
-            assert_eq!(req.path.unwrap(), "icap://example.local/service");
-            assert_eq!(req.headers.len(), 3);
-            assert_eq!(req.headers[0].name, "Host");
-            assert_eq!(req.headers[0].value, b"example.local");
-            assert_eq!(req.headers[1].name, "User-Agent");
-            assert_eq!(req.headers[1].value, b"Example-ICAP-Client-Library/2.0");
-        }
-    }
-
-    req! {
-        test_basic_respmod,
-        b"RESPMOD / ICAP/1.0\r\nEncapsulated: null-body=0\r\n\r\n",
-        |req| {
-            assert_eq!(req.method.unwrap(), "RESPMOD");
-        }
-    }
-
-    req! {
-        test_full_respmod,
-        b"RESPMOD icap://icap.example.org/satisf ICAP/1.0\r
-Host: icap.example.org\r
-Encapsulated: req-hdr=0, res-hdr=137, res-body=296\r
-\r
-GET /origin-resource HTTP/1.1\r
-Host: www.origin-server.com\r
-Accept: text/html, text/plain, image/gif\r
-Accept-Encoding: gzip, compress\r
-\r
-HTTP/1.1 200 OK\r
-Date: Mon, 10 Jan 2000 09:52:22 GMT\r
-Server: Apache/1.3.6 (Unix)\r
-ETag: \"63840-1ab7-378d415b\"\r
-Content-Type: text/html\r
-Content-Length: 51\r
-\r
-33\r
-This is data that was returned by an origin server.\r
-0\r
-\r
-",
-        |req| {
-            assert_eq!(req.method.unwrap(), "RESPMOD");
-        }
-    }
-
-
-
-    req! {
-        test_request_headers_max,
-        b"RESPMOD / ICAP/1.1\r\nA: A\r\nB: B\r\nC: C\r\nEncapsulated:null-body=0\r\n\r\n",
-        |req| {
-            assert_eq!(req.headers.len(), NUM_OF_HEADERS);
-        }
-    }
-
-    req! {
-        test_request_multibyte,
-        b"RESPMOD / ICAP/1.1\r\nHost: foo.com\r\nUser-Agent: \xe3\x81\xb2\xe3/1.0\r\nEncapsulated:null-body=0\r\n\r\n",
-        |req| {
-            assert_eq!(req.method.unwrap(), "RESPMOD");
-            assert_eq!(req.path.unwrap(), "/");
-            assert_eq!(req.version.unwrap(), 1);
-            assert_eq!(req.headers[0].name, "Host");
-            assert_eq!(req.headers[0].value, b"foo.com");
-            assert_eq!(req.headers[1].name, "User-Agent");
-            assert_eq!(req.headers[1].value, b"\xe3\x81\xb2\xe3/1.0");
-        }
-    }
-
-
-    req! {
-        test_request_partial,
-        b"RESPMOD / ICAP/1.1\r\n\r", Ok(Status::Partial),
-        |_req| {}
-    }
-
-    req! {
-        test_request_newlines,
-        b"RESPMOD / ICAP/1.1\nHost: foo.bar\nEncapsulated:null-body=0\n\n",
-        |_r| {}
-    }
-
-    req! {
-        test_request_empty_lines_prefix,
-        b"\r\n\r\nRESPMOD / ICAP/1.1\r\nEncapsulated:null-body=0\r\n\r\n",
-        |req| {
-            assert_eq!(req.method.unwrap(), "RESPMOD");
-            assert_eq!(req.path.unwrap(), "/");
-            assert_eq!(req.version.unwrap(), 1);
-            assert_eq!(req.headers.len(), 1);
-        }
-    }
-
-    req! {
-        test_request_with_invalid_token_delimiter,
-        b"RESPMOD\n/ ICAP/1.1\r\nHost: foo.bar\r\n\r\n",
-        Err(::Error::Token),
-        |_r| {}
-    }
-
-    macro_rules! res {
-        ($name:ident, $buf:expr, |$arg:ident| $body:expr) => (
-            res! {$name, $buf, Ok(Status::Complete($buf.len())), |$arg| $body }
-        );
-        ($name:ident, $buf:expr, $len:expr, |$arg:ident| $body:expr) => (
-        #[test]
-        fn $name() {
-            let mut headers = [EMPTY_HEADER; NUM_OF_HEADERS];
-            let mut res = Response::new(&mut headers[..]);
-            let status = res.parse($buf.as_ref());
-            assert_eq!(status, $len);
-            closure(res);
-
-            fn closure($arg: Response) {
-                $body
-            }
-        }
-        )
-    }
-
-    res! {
-        test_response_simple,
-        b"ICAP/1.1 200 OK\r\n\r\n",
-        |res| {
-            assert_eq!(res.version.unwrap(), 1);
-            assert_eq!(res.code.unwrap(), 200);
-            assert_eq!(res.reason.unwrap(), "OK");
-        }
-    }
-
-    res! {
-        test_response_newlines,
-        b"ICAP/1.0 403 Forbidden\nServer: foo.bar\n\n",
-        |_r| {}
-    }
-
-    res! {
-        test_response_reason_missing,
-        b"ICAP/1.1 200 \r\n\r\n",
-        |res| {
-            assert_eq!(res.version.unwrap(), 1);
-            assert_eq!(res.code.unwrap(), 200);
-            assert_eq!(res.reason.unwrap(), "");
-        }
-    }
-
-    res! {
-        test_response_reason_missing_no_space,
-        b"ICAP/1.1 200\r\n\r\n",
-        |res| {
-            assert_eq!(res.version.unwrap(), 1);
-            assert_eq!(res.code.unwrap(), 200);
-            assert_eq!(res.reason.unwrap(), "");
-        }
-    }
-
-    res! {
-        test_response_reason_with_space_and_tab,
-        b"ICAP/1.1 101 Switching Protocols\t\r\n\r\n",
-        |res| {
-            assert_eq!(res.version.unwrap(), 1);
-            assert_eq!(res.code.unwrap(), 101);
-            assert_eq!(res.reason.unwrap(), "Switching Protocols\t");
-        }
-    }
-
-    static RESPONSE_REASON_WITH_OBS_TEXT_BYTE: &'static [u8] = b"ICAP/1.1 200 X\xFFZ\r\n\r\n";
-    res! {
-        test_response_reason_with_obsolete_text_byte,
-        RESPONSE_REASON_WITH_OBS_TEXT_BYTE,
-        Err(::Error::Status),
-        |_res| {}
-    }
-
-    res! {
-        test_response_reason_with_nul_byte,
-        b"ICAP/1.1 200 \x00\r\n\r\n",
-        Err(::Error::Status),
-        |_res| {}
-    }
-
-    res! {
-        test_response_version_missing_space,
-        b"ICAP/1.1",
-        Ok(Status::Partial),
-        |_res| {}
-    }
-
-    res! {
-        test_response_code_missing_space,
-        b"ICAP/1.1 200",
-        Ok(Status::Partial),
-        |_res| {}
-    }
-
-    res! {
-        test_response_empty_lines_prefix_lf_only,
-        b"\n\nICAP/1.1 200 OK\n\n",
-        |_res| {}
-    }
-
-    #[test]
-    fn test_chunk_size() {
-        assert_eq!(parse_chunk_size(b"0\r\n"), Ok(Status::Complete((3, 0))));
-        assert_eq!(parse_chunk_size(b"12\r\nchunk"), Ok(Status::Complete((4, 18))));
-        assert_eq!(parse_chunk_size(b"3086d\r\n"), Ok(Status::Complete((7, 198765))));
-        assert_eq!(parse_chunk_size(b"3735AB1;foo bar*\r\n"), Ok(Status::Complete((18, 57891505))));
-        assert_eq!(parse_chunk_size(b"3735ab1 ; baz \r\n"), Ok(Status::Complete((16, 57891505))));
-        assert_eq!(parse_chunk_size(b"77a65\r"), Ok(Status::Partial));
-        assert_eq!(parse_chunk_size(b"ab"), Ok(Status::Partial));
-        assert_eq!(parse_chunk_size(b"567f8a\rfoo"), Err(::InvalidChunkSize));
-        assert_eq!(parse_chunk_size(b"567f8a\rfoo"), Err(::InvalidChunkSize));
-        assert_eq!(parse_chunk_size(b"567xf8a\r\n"), Err(::InvalidChunkSize));
-        assert_eq!(parse_chunk_size(b"ffffffffffffffff\r\n"), Ok(Status::Complete((18, ::core::u64::MAX))));
-        assert_eq!(parse_chunk_size(b"1ffffffffffffffff\r\n"), Err(::InvalidChunkSize));
-        assert_eq!(parse_chunk_size(b"Affffffffffffffff\r\n"), Err(::InvalidChunkSize));
-        assert_eq!(parse_chunk_size(b"fffffffffffffffff\r\n"), Err(::InvalidChunkSize));
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn test_std_error() {
-        use super::Error;
-        use std::error::Error as StdError;
-        let err = Error::HeaderName;
-        assert_eq!(err.to_string(), err.description());
-    }
-}

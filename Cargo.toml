@@ -1,10 +1,10 @@
 [package]
 
 name = "icaparse"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Craig Hills <chills@gmail.com>", "Sean McArthur <sean.monstar@gmail.com>"]
 license = "MIT/Apache-2.0"
-description = "A tiny, safe, speedy, zero-copy ICAP/1.x parser."
+description = "A tiny, safe, speedy ICAP/1.0 parser."
 repository = "https://github.com/chills42/icaparse"
 
 [features]
