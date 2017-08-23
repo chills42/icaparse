@@ -44,7 +44,7 @@ mod test {
         |req| {
             assert_eq!(req.method.unwrap(), "OPTIONS");
             assert_eq!(req.path.unwrap(), "/");
-            assert_eq!(req.version.unwrap(), 1);
+            assert_eq!(req.version.unwrap(), 0);
             assert_eq!(req.headers.len(), 1);
         }
     }
@@ -123,7 +123,7 @@ Accept-Encoding: gzip, compress\r
         |req| {
             assert_eq!(req.method.unwrap(), "RESPMOD");
             assert_eq!(req.path.unwrap(), "/");
-            assert_eq!(req.version.unwrap(), 1);
+            assert_eq!(req.version.unwrap(), 0);
             assert_eq!(req.headers[0].name, "Host");
             assert_eq!(req.headers[0].value, b"foo.com");
             assert_eq!(req.headers[1].name, "User-Agent");
@@ -150,7 +150,7 @@ Accept-Encoding: gzip, compress\r
         |req| {
             assert_eq!(req.method.unwrap(), "RESPMOD");
             assert_eq!(req.path.unwrap(), "/");
-            assert_eq!(req.version.unwrap(), 1);
+            assert_eq!(req.version.unwrap(), 0);
             assert_eq!(req.headers.len(), 1);
         }
     }
@@ -186,7 +186,7 @@ Accept-Encoding: gzip, compress\r
         test_response_simple,
         b"ICAP/1.0 200 OK\r\n\r\n",
         |res| {
-            assert_eq!(res.version.unwrap(), 1);
+            assert_eq!(res.version.unwrap(), 0);
             assert_eq!(res.code.unwrap(), 200);
             assert_eq!(res.reason.unwrap(), "OK");
         }
@@ -202,7 +202,7 @@ Accept-Encoding: gzip, compress\r
         test_response_reason_missing,
         b"ICAP/1.0 200 \r\n\r\n",
         |res| {
-            assert_eq!(res.version.unwrap(), 1);
+            assert_eq!(res.version.unwrap(), 0);
             assert_eq!(res.code.unwrap(), 200);
             assert_eq!(res.reason.unwrap(), "");
         }
@@ -212,7 +212,7 @@ Accept-Encoding: gzip, compress\r
         test_response_reason_missing_no_space,
         b"ICAP/1.0 200\r\n\r\n",
         |res| {
-            assert_eq!(res.version.unwrap(), 1);
+            assert_eq!(res.version.unwrap(), 0);
             assert_eq!(res.code.unwrap(), 200);
             assert_eq!(res.reason.unwrap(), "");
         }
@@ -222,7 +222,7 @@ Accept-Encoding: gzip, compress\r
         test_response_reason_with_space_and_tab,
         b"ICAP/1.0 101 Switching Protocols\t\r\n\r\n",
         |res| {
-            assert_eq!(res.version.unwrap(), 1);
+            assert_eq!(res.version.unwrap(), 0);
             assert_eq!(res.code.unwrap(), 101);
             assert_eq!(res.reason.unwrap(), "Switching Protocols\t");
         }
