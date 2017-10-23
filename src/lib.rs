@@ -327,7 +327,7 @@ impl<'h, 'b> Request<'h, 'b> {
         let headers_len = complete!(parse_headers_iter(&mut self.headers, &mut bytes));
         match self.headers.iter().find(|&h| h.name == "Encapsulated") {
             Some(h) => {
-                self.encapsulated_sections = Some(parse_encapsulated(&h.value, &buf[len+headers_len..buf.len()]));
+                self.encapsulated_sections = Some(parse_encapsulated(h.value, &buf[len+headers_len..buf.len()]));
                 Ok(Status::Complete(orig_len + len - len + headers_len - headers_len))
             },
             None => {
@@ -476,7 +476,7 @@ fn parse_version(bytes: &mut Bytes) -> Result<u8> {
 fn find_section_start(encapsulated: &str, section: &str) -> Option<usize> {
     if let Some(x) = encapsulated.find(section) {
         let start = x + section.len();
-        let end = match encapsulated[start..encapsulated.len()].find(",") {
+        let end = match encapsulated[start..encapsulated.len()].find(',') {
             Some(i) => start + i,
             None => encapsulated.len()
         };
@@ -596,7 +596,7 @@ fn parse_encapsulated(header: &[u8], encapsulated: &[u8]) -> HashMap<SectionType
 /// Note that the following implementation deliberately rejects the obsoleted (non-US-ASCII) text range.
 ///
 /// The fully compliant parser should probably just return the reason-phrase as an opaque &[u8] data
-/// and leave interpretation to user or specialized helpers (akin to .display() in std::path::Path)
+/// and leave interpretation to user or specialized helpers (akin to .display() in `std::path::Path`)
 #[inline]
 fn parse_reason<'a>(bytes: &mut Bytes<'a>) -> Result<&'a str> {
     loop {
@@ -639,9 +639,9 @@ fn parse_code(bytes: &mut Bytes) -> Result<u16> {
     let tens = expect!(bytes.next() == b'0'...b'9' => Err(Error::Status));
     let ones = expect!(bytes.next() == b'0'...b'9' => Err(Error::Status));
 
-    Ok(Status::Complete((hundreds - b'0') as u16 * 100 +
-                        (tens - b'0') as u16 * 10 +
-                        (ones - b'0') as u16))
+    Ok(Status::Complete(u16::from(hundreds - b'0') * 100 +
+                        u16::from(tens - b'0') * 10 +
+                        u16::from(ones - b'0')))
 }
 
 /// Parse a buffer of bytes as headers.
@@ -813,7 +813,7 @@ pub fn parse_chunk_size(buf: &[u8])
                 }
                 count += 1;
                 size *= RADIX;
-                size += (b - b'0') as u64;
+                size += u64::from(b - b'0');
             },
             b'a'...b'f' if in_chunk_size => {
                 if count > 15 {
@@ -821,7 +821,7 @@ pub fn parse_chunk_size(buf: &[u8])
                 }
                 count += 1;
                 size *= RADIX;
-                size += (b + 10 - b'a') as u64;
+                size += u64::from(b + 10 - b'a');
             }
             b'A'...b'F' if in_chunk_size => {
                 if count > 15 {
@@ -829,7 +829,7 @@ pub fn parse_chunk_size(buf: &[u8])
                 }
                 count += 1;
                 size *= RADIX;
-                size += (b + 10 - b'A') as u64;
+                size += u64::from(b + 10 - b'A');
             }
             b'\r' => {
                 match next!(bytes) {

@@ -134,7 +134,7 @@ impl<'a, 'b: 'a> Bytes8<'a, 'b> {
     #[cfg(debug_assertions)]
     #[inline]
     fn assert_pos(&mut self, pos: usize) {
-        assert!(self.pos == pos);
+        assert_eq!(self.pos, pos);
         self.pos += 1;
     }
 }
