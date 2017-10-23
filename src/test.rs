@@ -2,7 +2,8 @@ use super::*;
 
 #[cfg(test)]
 mod test {
-    use super::{Request, Response, Status, EMPTY_HEADER, shrink, parse_chunk_size};
+    extern crate httparse;
+    use super::{Request, Response, Status, EMPTY_HEADER, shrink, parse_chunk_size, SectionType};
 
     const NUM_OF_HEADERS: usize = 4;
 
@@ -61,6 +62,31 @@ mod test {
             assert_eq!(req.headers[1].name, "User-Agent");
             assert_eq!(req.headers[1].value, b"Example-ICAP-Client-Library/2.0");
         }
+    }
+
+    req! {
+        test_reqmod_basic,
+        b"REQMOD icap://icap-server.net/server?arg=87 ICAP/1.0\r
+Host: icap-server.net\r
+Encapsulated: req-hdr=0, null-body=170\r
+\r
+GET / HTTP/1.1\r
+Host: www.origin-server.com\r
+Accept: text/html, text/plain\r
+Accept-Encoding: compress\r
+Cookie: ff39fk3jur@4ii0e02i\r
+If-None-Match: \"xyzzy\", \"r2d2xxxx\"\r
+\r
+",
+       |req| {
+           assert_eq!(req.method.unwrap(), "REQMOD");
+           let encapsulated = req.encapsulated_sections.unwrap();
+           assert_eq!(encapsulated.len(), 2);
+           let mut headers = [httparse::EMPTY_HEADER; 16];
+           let mut req = httparse::Request::new(&mut headers);
+           let http_request = encapsulated.get(&SectionType::RequestHeader).unwrap();
+           assert_eq!(req.parse(http_request).unwrap().is_complete(), true);
+       }
     }
 
     req! {
