@@ -1,4 +1,4 @@
-# httparse
+# icaparse
 
 [![crates.io](http://meritbadge.herokuapp.com/icaparse)](https://crates.io/crates/icaparse)
 
